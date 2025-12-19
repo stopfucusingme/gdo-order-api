@@ -3,6 +3,15 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
+// Optional: helps browser tools (Hoppscotch) call your API
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 // Secret between GPT and your backend (NOT Shopify)
 const INBOUND_API_KEY = process.env.INBOUND_API_KEY;
 
@@ -28,14 +37,37 @@ async function getShopifyAccessToken() {
     body
   });
 
-  const data = await resp.json();
-  if (!resp.ok || !data.access_token) throw new Error(JSON.stringify(data));
+  const contentType = resp.headers.get("content-type") || "";
+  const rawText = await resp.text();
+
+  console.log("TOKEN RESPONSE:", {
+    status: resp.status,
+    contentType,
+    preview: rawText.slice(0, 200)
+  });
+
+  let data = null;
+  if (contentType.includes("application/json")) {
+    data = JSON.parse(rawText);
+  }
+
+  if (!resp.ok) {
+    throw new Error(
+      `Token request failed: status=${resp.status} contentType=${contentType} preview=${rawText.slice(0, 200)}`
+    );
+  }
+
+  if (!data?.access_token) {
+    throw new Error(
+      `Token missing access_token. contentType=${contentType} preview=${rawText.slice(0, 200)}`
+    );
+  }
+
   return data.access_token;
 }
 
 app.post("/create-draft-order", async (req, res) => {
   try {
-    // Simple auth (GPT -> your backend)
     const key = req.header("X-Api-Key");
     if (!INBOUND_API_KEY || key !== INBOUND_API_KEY) {
       return res.status(401).json({ error: "Unauthorized" });

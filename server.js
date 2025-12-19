@@ -26,6 +26,10 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 
 // Simple health endpoint
 app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/ping", (req, res) => {
+  console.log("PING HIT", { time: new Date().toISOString() });
+  res.json({ ok: true, ping: true });
+});
 
 /**
  * Gets a Shopify Admin API access token using the Client Credentials Grant.

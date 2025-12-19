@@ -3,7 +3,10 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-// Optional: helps browser tools (Hoppscotch) call your API
+/**
+ * CORS: Allows browser-based tools (Hoppscotch) to call this API.
+ * Safe for testing. For production you can restrict origins if desired.
+ */
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key");
@@ -12,18 +15,29 @@ app.use((req, res, next) => {
   next();
 });
 
-// Secret between GPT and your backend (NOT Shopify)
+// Secret between GPT and YOUR backend (not Shopify)
 const INBOUND_API_KEY = process.env.INBOUND_API_KEY;
 
-// Shopify store + app credentials
-const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN; // rwn1zb-we.myshopify.com
+// Shopify store + app credentials (set these in Render → Environment)
+const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN; // e.g. rwn1zb-we.myshopify.com
 const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;
 const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 
+// Simple health endpoint
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+/**
+ * Gets a Shopify Admin API access token using the Client Credentials Grant.
+ * IMPORTANT: Reads the response as TEXT first, so if Shopify returns HTML we log it and do not crash.
+ */
 async function getShopifyAccessToken() {
+  if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_CLIENT_ID || !SHOPIFY_CLIENT_SECRET) {
+    throw new Error(
+      "Missing Shopify environment variables. Check SHOPIFY_SHOP_DOMAIN, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET."
+    );
+  }
+
   const url = `https://${SHOPIFY_SHOP_DOMAIN}/admin/oauth/access_token`;
 
   const body = new URLSearchParams();
@@ -40,6 +54,7 @@ async function getShopifyAccessToken() {
   const contentType = resp.headers.get("content-type") || "";
   const rawText = await resp.text();
 
+  // This log line is critical for diagnosing the HTML/JSON issue
   console.log("TOKEN RESPONSE:", {
     status: resp.status,
     contentType,
@@ -66,21 +81,47 @@ async function getShopifyAccessToken() {
   return data.access_token;
 }
 
+/**
+ * POST /create-draft-order
+ * Creates a Shopify Draft Order and returns invoice_url (Shopify checkout link).
+ *
+ * Authentication:
+ * - Requires header: X-Api-Key = INBOUND_API_KEY
+ *
+ * Body:
+ * {
+ *   "customer": {"email":"..."},
+ *   "shipping_address": {"address1":"..."},
+ *   "items": [{"title":"Single Vision Lenses","price":150,"quantity":1}],
+ *   "tags": ["optional"],
+ *   "note": "optional"
+ * }
+ */
 app.post("/create-draft-order", async (req, res) => {
   try {
+    // 1) Authenticate request (GPT -> your backend)
     const key = req.header("X-Api-Key");
     if (!INBOUND_API_KEY || key !== INBOUND_API_KEY) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
+    // 2) Validate inputs
     const { customer, shipping_address, items, tags = [], note = "" } = req.body;
 
-    if (!customer?.email || !shipping_address?.address1 || !Array.isArray(items) || !items.length) {
-      return res.status(400).json({ error: "Missing required fields" });
+    if (!customer?.email) {
+      return res.status(400).json({ error: "Missing required field: customer.email" });
+    }
+    if (!shipping_address?.address1) {
+      return res.status(400).json({ error: "Missing required field: shipping_address.address1" });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Missing required field: items (must be a non-empty array)" });
     }
 
+    // 3) Get Shopify token
     const accessToken = await getShopifyAccessToken();
 
+    // 4) Create Draft Order in Shopify
     const gql = `
       mutation draftOrderCreate($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
@@ -126,16 +167,26 @@ app.post("/create-draft-order", async (req, res) => {
     });
 
     const data = await resp.json();
-    const errs = data?.data?.draftOrderCreate?.userErrors;
-    if (!resp.ok || (errs && errs.length)) {
-      return res.status(400).json({ error: "Shopify error", details: errs ?? data });
+
+    const userErrors = data?.data?.draftOrderCreate?.userErrors;
+    if (!resp.ok || (Array.isArray(userErrors) && userErrors.length > 0)) {
+      return res.status(400).json({
+        error: "Shopify error creating draft order",
+        details: userErrors ?? data
+      });
     }
 
     const draft = data.data.draftOrderCreate.draftOrder;
-    return res.json({ draft_order_id: draft.id, invoice_url: draft.invoiceUrl });
+    return res.json({
+      draft_order_id: draft.id,
+      invoice_url: draft.invoiceUrl
+    });
   } catch (e) {
+    console.error("SERVER ERROR:", String(e));
     return res.status(500).json({ error: "Server error", details: String(e) });
   }
 });
 
-app.listen(process.env.PORT || 3000, () => console.log("Order API running"));
+// Start server
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Order API running on port ${port}`));

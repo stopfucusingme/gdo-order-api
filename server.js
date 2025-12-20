@@ -102,6 +102,12 @@ async function getShopifyAccessToken() {
  * }
  */
 app.post("/create-draft-order", async (req, res) => {
+  console.log("CREATE_DRAFT_ORDER HIT", {
+  time: new Date().toISOString(),
+  hasXApiKey: Boolean(req.headers["x-api-key"]),
+  hasAuth: Boolean(req.headers["authorization"])
+});
+
   try {
     // 1) Authenticate request (GPT -> your backend)
     const key = req.header("X-Api-Key");
